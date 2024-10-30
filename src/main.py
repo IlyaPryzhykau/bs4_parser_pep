@@ -1,26 +1,35 @@
+import logging
 import re
 from urllib.parse import urljoin
-import logging
 
 import requests_cache
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from constants import BASE_DIR, MAIN_DOC_URL, MAIN_PEP_URL, EXPECTED_STATUS
+from constants import (BASE_DIR, DOWNLOADS_DIR_NAME, MAIN_DOC_URL, MAIN_PEP_URL,
+                       EXPECTED_STATUS)
 from configs import configure_argument_parser, configure_logging
 from outputs import control_output
-from utils import get_response, find_tag, find_all_tag
+from utils import find_all_tag, find_tag, get_response
+from exceptions import DataNotFoundError
+
+
+def fetch_soup(session, url, encoding='utf-8', parser='lxml'):
+    """Получает и парсит HTML-страницу по заданному URL."""
+    response = get_response(session, url, encoding)
+
+    return BeautifulSoup(response.text, parser)
 
 
 def whats_new(session):
+    """Получает ссылки на статьи о новых версиях Python."""
     whats_new_url = urljoin(MAIN_DOC_URL, 'whatsnew/')
 
-    response = get_response(session, whats_new_url)
-    if response is None:
-        # Если основная страница не загрузится, программа закончит работу.
+    try:
+        soup = fetch_soup(session, whats_new_url)
+    except Exception as e:
+        logging.error(f"Не удалось загрузить страницу {whats_new_url}: {e}")
         return
-
-    soup = BeautifulSoup(response.text, 'lxml')
 
     main_div = find_tag(
         soup, 'section', attrs={'id': 'what-s-new-in-python'})
@@ -37,8 +46,8 @@ def whats_new(session):
 
         response = get_response(session, version_link)
         if response is None:
-            # Если страница не загрузится, программа
-            # перейдёт к следующей ссылке.
+            logging.warning("Пропущена итерация: не удалось загрузить"
+                            f" страницу {version_link}")
             continue
 
         soup = BeautifulSoup(response.text, 'lxml')
@@ -51,13 +60,14 @@ def whats_new(session):
 
 
 def latest_versions(session):
-    response = get_response(session, MAIN_DOC_URL)
-    if response is None:
+    """Получает список всех версий Python и их статусы."""
+    try:
+        soup = fetch_soup(session, MAIN_DOC_URL)
+    except Exception as e:
+        logging.error(f"Не удалось загрузить страницу {MAIN_DOC_URL}: {e}")
         return
 
-    soup = BeautifulSoup(response.text, 'lxml')
-
-    sidebar = find_tag(soup, 'div', class_='sphinxsidebarwrapper')
+    sidebar = find_tag(soup, 'div', {'class': 'sphinxsidebarwrapper'})
     ul_tags = sidebar.find_all('ul')
 
     for ul in ul_tags:
@@ -65,9 +75,9 @@ def latest_versions(session):
             a_tags = ul.find_all('a')
             break
     else:
-        raise Exception('Ничего не нашлось')
+        raise DataNotFoundError('Не найдена секция с версиями')
 
-    results = []
+    results = [('Ссылка', 'Версия', 'Статус')]
     pattern = r'Python (?P<version>\d\.\d+) \((?P<status>.*)\)'
     for a_tag in a_tags:
         link = a_tag['href']
@@ -84,13 +94,14 @@ def latest_versions(session):
 
 
 def download(session):
+    """Скачивает архив с последней версией документации Python."""
     downloads_url = urljoin(MAIN_DOC_URL, 'download.html')
 
-    response = get_response(session, downloads_url)
-    if response is None:
+    try:
+        soup = fetch_soup(session, downloads_url)
+    except Exception as e:
+        logging.error(f"Не удалось загрузить страницу {downloads_url}: {e}")
         return
-
-    soup = BeautifulSoup(response.text, 'lxml')
 
     table_tag = find_tag(soup, 'table', {'class': 'docutils'})
     pdf_a4_tag = find_tag(
@@ -100,7 +111,7 @@ def download(session):
 
     filename = archive_url.split('/')[-1]
 
-    downloads_dir = BASE_DIR / 'downloads'
+    downloads_dir = BASE_DIR / DOWNLOADS_DIR_NAME
     downloads_dir.mkdir(exist_ok=True)
     archive_path = downloads_dir / filename
 
@@ -113,25 +124,29 @@ def download(session):
 
 
 def pep(session):
+    """Получает информацию о PEP (Python Enhancement Proposals)."""
     peps_url = urljoin(MAIN_PEP_URL, '#numerical-index')
 
-    response = get_response(session, peps_url)
-    if response is None:
+    try:
+        soup = fetch_soup(session, peps_url)
+    except Exception as e:
+        logging.error(f"Не удалось загрузить страницу {peps_url}: {e}")
         return
 
-    soup = BeautifulSoup(response.text, 'lxml')
     tables = find_all_tag(soup, 'table',
                           {'class': 'pep-zero-table docutils align-default'})
 
     result_dict = {}
+    log_messages = []
 
     for table in tables:
         rows = find_all_tag(table, 'tr', {'class': 'row-even'})
 
         for row in rows:
             abbr_tag = row.find('abbr')
-            table_pep_status = abbr_tag.get_text(strip=True) \
-                if abbr_tag and 'title' in abbr_tag.attrs else None
+            table_pep_status = (abbr_tag.get_text(strip=True)
+                                if abbr_tag and 'title' in abbr_tag.attrs
+                                else None)
 
             a_tag = row.find('a', {'class': 'pep reference internal'})
             href = a_tag['href']
@@ -152,16 +167,23 @@ def pep(session):
             result_dict[pep_status] = result_dict.get(pep_status, 0) + 1
 
             if not table_pep_status or len(table_pep_status) < 2:
-                logging.info(f'Несовпадающие статусы: {pep_url} \n'
-                             f'Статус в карточке: Some unknown status \n'
-                             f'Ожидаемые статусы: {pep_type, pep_status}')
+                log_messages.append(
+                    f'Несовпадающие статусы: {pep_url} \n'
+                    'Статус в карточке: Some unknown status \n'
+                    f'Ожидаемые статусы: {pep_type, pep_status}'
+                )
             elif pep_status not in EXPECTED_STATUS[table_pep_status[1]]:
-                logging.info(f'Несовпадающие статусы: {pep_url} \n'
-                             f'Статус в карточке: '
-                             f'{EXPECTED_STATUS[table_pep_status[1]]} \n'
-                             f'Ожидаемые статусы: {[pep_type, pep_status]}')
+                log_messages.append(
+                    f'Несовпадающие статусы: {pep_url} \n'
+                    f'Статус в карточке: {table_pep_status} \n'
+                    f'Ожидаемые статусы: {[pep_type, pep_status]}'
+                )
 
         result = list(result_dict.items())
+
+    if log_messages:
+        logging.info("Найдены несовпадающие статусы:\n"
+                     + "\n".join(log_messages))
 
     header = [('Статус', 'Количество')]
     total = [('Total', sum(result_dict.values()))]
@@ -179,32 +201,30 @@ MODE_TO_FUNCTION = {
 
 
 def main():
-    # Запускаем функцию с конфигурацией логов.
-    configure_logging()
-    # Отмечаем в логах момент запуска программы.
-    logging.info('Парсер запущен!')
+    """Основная функция запуска парсера."""
+    try:
+        configure_logging()
+        logging.info('Парсер запущен!')
 
-    arg_parser = configure_argument_parser(MODE_TO_FUNCTION.keys())
-    args = arg_parser.parse_args()
+        arg_parser = configure_argument_parser(MODE_TO_FUNCTION.keys())
+        args = arg_parser.parse_args()
 
-    # Логируем переданные аргументы командной строки.
-    logging.info(f'Аргументы командной строки: {args}')
+        logging.info(f'Аргументы командной строки: {args}')
 
-    session = requests_cache.CachedSession()
-    if args.clear_cache:
-        session.cache.clear()
+        session = requests_cache.CachedSession()
+        if args.clear_cache:
+            session.cache.clear()
 
-    parser_mode = args.mode
-    # Сохраняем результат вызова функции в переменную results.
-    results = MODE_TO_FUNCTION[parser_mode](session)
+        parser_mode = args.mode
+        results = MODE_TO_FUNCTION[parser_mode](session)
 
-    # Если из функции вернулись какие-то результаты,
-    if results is not None:
-        # передаём их в функцию вывода вместе с аргументами командной строки.
-        control_output(results, args)
-
-    # Логируем завершение работы парсера.
-    logging.info('Парсер завершил работу.')
+        if results is not None:
+            control_output(results, args)
+    except Exception as e:
+        logging.exception('Возникло исключение во время '
+                          f'работы парсера: {e}')
+    finally:
+        logging.info('Парсер завершил работу.')
 
 
 if __name__ == '__main__':

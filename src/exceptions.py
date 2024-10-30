@@ -1,3 +1,6 @@
 class ParserFindTagException(Exception):
     """Вызывается, когда парсер не может найти тег."""
-    pass
+
+
+class DataNotFoundError(Exception):
+    """Вызывается при отсутствии ожидаемых данных."""
