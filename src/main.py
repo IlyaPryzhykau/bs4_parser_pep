@@ -6,8 +6,8 @@ import requests_cache
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from constants import (BASE_DIR, DOWNLOADS_DIR_NAME, MAIN_DOC_URL, MAIN_PEP_URL,
-                       EXPECTED_STATUS)
+from constants import (BASE_DIR, DOWNLOADS_DIR_NAME, MAIN_DOC_URL,
+                       MAIN_PEP_URL, EXPECTED_STATUS)
 from configs import configure_argument_parser, configure_logging
 from outputs import control_output
 from utils import find_all_tag, find_tag, get_response
