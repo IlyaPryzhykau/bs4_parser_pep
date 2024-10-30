@@ -1,8 +1,9 @@
 import logging
 
 from requests import RequestException
+from bs4 import BeautifulSoup
 
-from exceptions import ParserFindTagException
+from exceptions import PageLoadError, ParserFindTagException
 
 
 def get_response(session, url, encoding='utf-8'):
@@ -12,7 +13,14 @@ def get_response(session, url, encoding='utf-8'):
         response.encoding = encoding
         return response
     except RequestException as e:
-        raise Exception(f"Ошибка при загрузке страницы {url}: {e}")
+        raise PageLoadError(f"Ошибка при загрузке страницы {url}: {e}")
+
+
+def fetch_soup(session, url, encoding='utf-8', parser='lxml'):
+    """Получает и парсит HTML-страницу по заданному URL."""
+    response = get_response(session, url, encoding)
+
+    return BeautifulSoup(response.text, parser)
 
 
 def find_tag(soup, tag, attrs=None):

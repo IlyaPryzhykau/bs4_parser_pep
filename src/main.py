@@ -3,33 +3,20 @@ import re
 from urllib.parse import urljoin
 
 import requests_cache
-from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from constants import (BASE_DIR, DOWNLOADS_DIR_NAME, MAIN_DOC_URL,
-                       MAIN_PEP_URL, EXPECTED_STATUS)
+from constants import (BASE_DIR, DOWNLOADS_DIR_NAME, EXPECTED_STATUS,
+                       MAIN_DOC_URL, MAIN_PEP_URL)
 from configs import configure_argument_parser, configure_logging
+from exceptions import DataNotFoundError, PageLoadError
 from outputs import control_output
-from utils import find_all_tag, find_tag, get_response
-from exceptions import DataNotFoundError
-
-
-def fetch_soup(session, url, encoding='utf-8', parser='lxml'):
-    """Получает и парсит HTML-страницу по заданному URL."""
-    response = get_response(session, url, encoding)
-
-    return BeautifulSoup(response.text, parser)
+from utils import fetch_soup, find_all_tag, find_tag, get_response
 
 
 def whats_new(session):
     """Получает ссылки на статьи о новых версиях Python."""
     whats_new_url = urljoin(MAIN_DOC_URL, 'whatsnew/')
-
-    try:
-        soup = fetch_soup(session, whats_new_url)
-    except Exception as e:
-        logging.error(f"Не удалось загрузить страницу {whats_new_url}: {e}")
-        return
+    soup = fetch_soup(session, whats_new_url)
 
     main_div = find_tag(
         soup, 'section', attrs={'id': 'what-s-new-in-python'})
@@ -38,34 +25,36 @@ def whats_new(session):
         'class': 'toctree-l1'})
 
     results = [('Ссылка на статью', 'Заголовок', 'Редактор, автор'), ]
+    log_messages = []
+
     for section in tqdm(sections_by_python):
         version_a_tag = section.find('a')
 
         href = version_a_tag['href']
         version_link = urljoin(whats_new_url, href)
 
-        response = get_response(session, version_link)
-        if response is None:
-            logging.warning("Пропущена итерация: не удалось загрузить"
-                            f" страницу {version_link}")
+        try:
+            soup = fetch_soup(session, version_link)
+        except PageLoadError as e:
+            log_messages.append("Ошибка загрузки страницы "
+                                f"{version_link}: {e}")
             continue
 
-        soup = BeautifulSoup(response.text, 'lxml')
         h1 = find_tag(soup, 'h1')
         dl = find_tag(soup, 'dl')
         dl_text = dl.text.replace('\n', ' ')
         results.append((version_link, h1.text, dl_text))
+
+    if log_messages:
+        logging.error(
+            "Ошибки при загрузке страниц:\n" + "\n".join(log_messages))
 
     return results
 
 
 def latest_versions(session):
     """Получает список всех версий Python и их статусы."""
-    try:
-        soup = fetch_soup(session, MAIN_DOC_URL)
-    except Exception as e:
-        logging.error(f"Не удалось загрузить страницу {MAIN_DOC_URL}: {e}")
-        return
+    soup = fetch_soup(session, MAIN_DOC_URL)
 
     sidebar = find_tag(soup, 'div', {'class': 'sphinxsidebarwrapper'})
     ul_tags = sidebar.find_all('ul')
@@ -96,12 +85,7 @@ def latest_versions(session):
 def download(session):
     """Скачивает архив с последней версией документации Python."""
     downloads_url = urljoin(MAIN_DOC_URL, 'download.html')
-
-    try:
-        soup = fetch_soup(session, downloads_url)
-    except Exception as e:
-        logging.error(f"Не удалось загрузить страницу {downloads_url}: {e}")
-        return
+    soup = fetch_soup(session, downloads_url)
 
     table_tag = find_tag(soup, 'table', {'class': 'docutils'})
     pdf_a4_tag = find_tag(
@@ -126,12 +110,7 @@ def download(session):
 def pep(session):
     """Получает информацию о PEP (Python Enhancement Proposals)."""
     peps_url = urljoin(MAIN_PEP_URL, '#numerical-index')
-
-    try:
-        soup = fetch_soup(session, peps_url)
-    except Exception as e:
-        logging.error(f"Не удалось загрузить страницу {peps_url}: {e}")
-        return
+    soup = fetch_soup(session, peps_url)
 
     tables = find_all_tag(soup, 'table',
                           {'class': 'pep-zero-table docutils align-default'})
@@ -139,7 +118,7 @@ def pep(session):
     result_dict = {}
     log_messages = []
 
-    for table in tables:
+    for table in tqdm(tables):
         rows = find_all_tag(table, 'tr', {'class': 'row-even'})
 
         for row in rows:
@@ -152,11 +131,13 @@ def pep(session):
             href = a_tag['href']
 
             pep_url = urljoin(MAIN_PEP_URL, href)
-            response = get_response(session, pep_url)
-            if response is None:
-                return
 
-            soup = BeautifulSoup(response.text, 'lxml')
+            try:
+                soup = fetch_soup(session, pep_url)
+            except PageLoadError as e:
+                log_messages.append(f"Ошибка загрузки страницы {pep_url}: {e}")
+                continue
+
             pep_info = find_tag(soup, 'dl',
                                 {'class': 'rfc2822 field-list simple'})
 
