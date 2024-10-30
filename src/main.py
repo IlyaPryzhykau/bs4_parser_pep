@@ -10,7 +10,7 @@ from constants import (BASE_DIR, DOWNLOADS_DIR_NAME, EXPECTED_STATUS,
 from configs import configure_argument_parser, configure_logging
 from exceptions import DataNotFoundError, PageLoadError
 from outputs import control_output
-from utils import fetch_soup, find_all_tag, find_tag, get_response
+from utils import fetch_soup, find_all_tag, find_tag
 
 
 def whats_new(session):
